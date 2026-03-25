@@ -14,7 +14,7 @@ a brighter, closer pair is easier (lower weight) than a dim, distant pair.
 The easiest path is found using Dijkstra's shortest path algorithm, implemented
 from scratch using a min-heap (priority queue).
 
-Copyright (c) 2026 [Your Names Here]
+
 """
 
 from __future__ import annotations
