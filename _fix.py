@@ -1,3 +1,4 @@
+code = '''\
 """CSC111 Winter 2026 Project: Constellation Explorer
 
 graph.py - WeightedGraph Implementation
@@ -44,11 +45,11 @@ class WeightedGraph:
     def get_vertex_data(self, item: int) -> dict:
         v = self._vertices[item]
         return {
-            'item': v.item,
-            'ra': v.ra,
-            'dec': v.dec,
-            'magnitude': v.magnitude,
-            'name': v.name,
+            \'item\': v.item,
+            \'ra\': v.ra,
+            \'dec\': v.dec,
+            \'magnitude\': v.magnitude,
+            \'name\': v.name,
         }
 
     def get_neighbours(self, item: int) -> set:
@@ -62,3 +63,8 @@ class WeightedGraph:
 
     def num_edges(self) -> int:
         return sum(len(v.neighbours) for v in self._vertices.values()) // 2
+'''
+
+with open('/Users/jennylin/Documents/GitHub/Project_2/graph.py', 'w') as f:
+    f.write(code)
+print('graph.py fixed')

@@ -95,7 +95,7 @@ def load_constellation_info(filename: str) -> dict[str, dict]:
     """
     info = {}
 
-    with open(filename, encoding='latin-1') as f:
+    with open(filename) as f:
         reader = csv.DictReader(f)
 
         for row in reader:

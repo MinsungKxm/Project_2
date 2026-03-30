@@ -44,22 +44,24 @@ MIN_R      = 1
 MAG_BRIGHT = 0.0
 MAG_FAINT  = 6.5
 
-RA_CENTER  = 180.0
+RA_CENTER  = 80.0
 DEC_CENTER = 0.0
 RA_SPAN    = 120.0
 DEC_SPAN   = 80.0
 
-SNAP_PX = 12
+SNAP_PX = 20
 
 
 # ---------------------------------------------------------------------------
 # Coordinate helpers
 # ---------------------------------------------------------------------------
 
-def ra_dec_to_screen(ra: float, dec: float) -> tuple[int, int]:
+def ra_dec_to_screen(ra: float, dec: float,
+                     ra_center: float = RA_CENTER,
+                     dec_center: float = DEC_CENTER) -> tuple[int, int]:
     """Map (RA, Dec) in degrees to a pixel (x, y) on the screen."""
-    x = int((ra - (RA_CENTER - RA_SPAN / 2)) / RA_SPAN * SCREEN_W)
-    y = int((1.0 - (dec - (DEC_CENTER - DEC_SPAN / 2)) / DEC_SPAN) * SCREEN_H)
+    x = int((ra - (ra_center - RA_SPAN / 2)) / RA_SPAN * SCREEN_W)
+    y = int((1.0 - (dec - (dec_center - DEC_SPAN / 2)) / DEC_SPAN) * SCREEN_H)
     return x, y
 
 
@@ -74,12 +76,14 @@ def magnitude_to_radius(mag: float) -> int:
 # Data helpers
 # ---------------------------------------------------------------------------
 
-def build_star_list(g, constellation_map: dict) -> list[dict]:
+def build_star_list(g, constellation_map: dict,
+                    ra_center: float = RA_CENTER,
+                    dec_center: float = DEC_CENTER) -> list[dict]:
     """Return one dict per star in g, including its screen (x, y) position."""
     stars = []
     for hip in g.all_vertices():
         data = g.get_vertex_data(hip)
-        sx, sy = ra_dec_to_screen(data['ra'], data['dec'])
+        sx, sy = ra_dec_to_screen(data['ra'], data['dec'], ra_center, dec_center)
         codes = [c for c, members in constellation_map.items() if hip in members]
         stars.append({
             'hip':   hip,
@@ -238,7 +242,14 @@ def main() -> None:
 
     active = "Ori" if "Ori" in constellation_map else next(iter(constellation_map))
 
-    all_stars = build_star_list(g, constellation_map)
+    # Auto-centre the view on the active constellation
+    hips = constellation_map.get(active, set())
+    ra_vals = [g.get_vertex_data(h)['ra'] for h in hips if g.has_vertex(h)]
+    dec_vals = [g.get_vertex_data(h)['dec'] for h in hips if g.has_vertex(h)]
+    view_ra = sum(ra_vals) / len(ra_vals) if ra_vals else RA_CENTER
+    view_dec = sum(dec_vals) / len(dec_vals) if dec_vals else DEC_CENTER
+
+    all_stars = build_star_list(g, constellation_map, view_ra, view_dec)
     lookup = {s['hip']: s for s in all_stars}
     real_graph = build_real_graph(active, constellation_map, g)
 
