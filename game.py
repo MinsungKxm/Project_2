@@ -1,26 +1,21 @@
 """CSC111 Winter 2026 Project: Constellation Explorer
 
-game.py - Main Game Entry Point
-
-This is the file you run to start the game. It:
-    1. Loads all star and constellation data
-    2. Picks a random constellation for the player to draw
-    3. Launches the pygame visualization window
-    4. Shows the player's score when they press ENTER
-
-How to run:
-    python game.py
+game.py  - Main Game Entry Point
 
 Controls:
-    - Click stars       : draw lines between them
-    - Click last star   : undo last point
-    - ENTER             : score your drawing
-    - R                 : reset drawing
-    - N                 : next constellation (random)
-    - Q / close window  : quit
-"""
+    - Click stars           : draw lines between them
+    - Click last star or Z  : undo last point
+    - ENTER                 : score your drawing
+    - R                     : reset drawing
+    - G                     : toggle reference constellation graph
+    - N                     : next constellation (random)
+    - Q / close window      : quit
 
+Copyright (c) 2026 Jenny Lin and Project Group
+"""
 from __future__ import annotations
+import doctest
+import python_ta
 import random
 import pygame
 
@@ -31,8 +26,8 @@ from visualization import (
     build_star_list, build_real_graph,
     draw_stars, draw_real_lines, draw_user_lines, draw_hud,
     nearest_star, score_drawing,
-    SCREEN_W, SCREEN_H, BLACK,
-    RA_CENTER, DEC_CENTER
+    SCREEN_W, SCREEN_H, BLACK, GREY, WHITE, GREEN,
+    RA_CENTER, DEC_CENTER, RA_SPAN, DEC_SPAN
 )
 
 
@@ -43,14 +38,28 @@ def pick_constellation(constellation_map: dict, info: dict) -> str:
 
 
 def draw_game_hud(screen: pygame.Surface, score_text: str, code: str,
-                  info: dict, font_sm: pygame.font.Font, font_md: pygame.font.Font, mode: str) -> None:
-    """Draw HUD with instructions for the current mode."""
-    from visualization import GREY, WHITE, GREEN
+                  info: dict, font_sm: pygame.font.Font, font_md: pygame.font.Font,
+                  mode: str, show_graph: bool) -> None:
+    """Draw the HUD with key hints, constellation name, meaning, and score.
 
+    Shows different key hints depending on whether the player is in draw mode
+    or star-hopping mode, and whether the reference graph is currently visible.
+
+    Parameters:
+        - screen: the pygame surface to draw onto
+        - score_text: the most recent score message, or '' if none yet
+        - code: the active constellation code (e.g. 'Ori')
+        - info: mapping from constellation code to metadata dict
+        - font_sm: small font used for hints and meaning text
+        - font_md: medium bold font used for title and score
+        - mode: either 'draw' or 'hop'
+        - show_graph: whether the reference constellation lines are visible
+    """
+    graph_hint = "G: Hide graph" if show_graph else "G: Show graph"
     if mode == "hop":
-        hint = "Hop mode: click START then TARGET | ENTER: recompute | R: Reset | H: Toggle | N: Next | Q: Quit"
+        hint = f"Hop mode: click START then TARGET | ENTER: recompute | R: Reset | H: Toggle | N: Next | {graph_hint} | Q: Quit"
     else:
-        hint = "Click stars to draw  |  ENTER: Score  |  R: Reset  |  N: Next  |  Q: Quit"
+        hint = f"Left-click: draw  |  Right-click: lift pen  |  Z: undo  |  ENTER: Score  |  R: Reset  |  N: Next  |  {graph_hint}  |  Q: Quit"
 
     screen.blit(font_sm.render(hint, True, GREY), (10, SCREEN_H - 22))
     if code in info:
@@ -63,14 +72,42 @@ def draw_game_hud(screen: pygame.Surface, score_text: str, code: str,
         screen.blit(font_md.render(score_text, True, GREEN), (10, 56))
 
 
-def constellation_center(code: str, constellation_map: dict, g) -> tuple[float, float]:
-    """Return the mean RA and Dec of a constellation's stars."""
+def constellation_center(code: str, constellation_map: dict, g) -> tuple[float, float, float, float]:
+    """Return view centre (RA, Dec) and span (ra_span, dec_span) for a constellation.
+
+    Handles RA wraparound (stars near 0°/360°) and auto-zooms so every
+    constellation fits on screen with padding.
+    """
     hips = constellation_map.get(code, set())
     ra_vals = [g.get_vertex_data(h)['ra'] for h in hips if g.has_vertex(h)]
     dec_vals = [g.get_vertex_data(h)['dec'] for h in hips if g.has_vertex(h)]
-    ra = sum(ra_vals) / len(ra_vals) if ra_vals else RA_CENTER
-    dec = sum(dec_vals) / len(dec_vals) if dec_vals else DEC_CENTER
-    return ra, dec
+
+    if not ra_vals:
+        return RA_CENTER, DEC_CENTER, RA_SPAN, DEC_SPAN
+
+    # Detect wraparound: if naive span > 180°, shift stars > 180° down by 360°
+    naive_span = max(ra_vals) - min(ra_vals)
+    if naive_span > 180.0:
+        ra_vals = [r - 360.0 if r > 180.0 else r for r in ra_vals]
+
+    ra_center = (max(ra_vals) + min(ra_vals)) / 2
+    dec_center = (max(dec_vals) + min(dec_vals)) / 2
+
+    # Add 50% padding so stars don't sit at the very edge
+    ra_needed = (max(ra_vals) - min(ra_vals)) * 1.5 + 20
+    dec_needed = (max(dec_vals) - min(dec_vals)) * 1.5 + 20
+
+    # Minimum zoom so small constellations aren't too zoomed in
+    ra_span = max(ra_needed, 40.0)
+    dec_span = max(dec_needed, 30.0)
+
+    # Keep the same aspect ratio as the screen to avoid distortion
+    if ra_span / dec_span < 1.5:
+        ra_span = dec_span * 1.5
+    else:
+        dec_span = ra_span / 1.5
+
+    return ra_center, dec_center, ra_span, dec_span
 
 
 def main(start_mode: str = "draw") -> None:
@@ -106,17 +143,20 @@ def main(start_mode: str = "draw") -> None:
     real_graph = build_real_graph(active, constellation_map, g)
 
     # Centre view on starting constellation
-    view_ra, view_dec = constellation_center(active, constellation_map, g)
-    all_stars = build_star_list(g, constellation_map, view_ra, view_dec)
+    view_ra, view_dec, view_ra_span, view_dec_span = constellation_center(active, constellation_map, g)
+    all_stars = build_star_list(g, constellation_map, view_ra, view_dec, view_ra_span, view_dec_span)
     lookup = {s['hip']: s for s in all_stars}
 
     mode = start_mode if start_mode in ("draw", "hop") else "draw"
 
-    selected: list[int] = []
+    # strokes: list of strokes; each stroke is a list of HIP ids.
+    # Right-click lifts the pen and starts a new stroke.
+    strokes: list[list[int]] = [[]]
     hop_selection: list[int] = []  # [start] or [start, target]
     hop_route: list[int] = []       # full path returned by Dijkstra
     hovered = None
     score_text = ""
+    show_graph = False  # G key toggles the reference constellation lines
 
     running = True
     while running:
@@ -134,22 +174,34 @@ def main(start_mode: str = "draw") -> None:
                     # Toggle between constellation-building and star-hopping.
                     if mode == "draw":
                         mode = "hop"
-                        selected, score_text = [], ""
+                        strokes, score_text = [[]], ""
                         hop_selection, hop_route = [], []
                     else:
                         mode = "draw"
-                        selected, score_text = [], ""
+                        strokes, score_text = [[]], ""
                         hop_selection, hop_route = [], []
 
                 elif event.key == pygame.K_r:
                     if mode == "draw":
-                        selected, score_text = [], ""
+                        strokes, score_text = [[]], ""
                     else:
                         hop_selection, hop_route, score_text = [], [], ""
 
+                elif event.key == pygame.K_z:
+                    if mode == "draw":
+                        # Undo: remove last star; if current stroke is empty, remove it too
+                        while strokes and not strokes[-1]:
+                            if len(strokes) > 1:
+                                strokes.pop()
+                            else:
+                                break
+                        if strokes and strokes[-1]:
+                            strokes[-1].pop()
+                        score_text = ""
+
                 elif event.key == pygame.K_RETURN:
                     if mode == "draw":
-                        score_text = score_drawing(selected, lookup, real_graph)
+                        score_text = score_drawing(strokes, lookup, real_graph)
                     elif len(hop_selection) == 2 and hop_selection[0] != hop_selection[1]:
                         start, target = hop_selection[0], hop_selection[1]
                         path, cost = find_easiest_path(hop_graph, str(start), str(target))
@@ -164,11 +216,15 @@ def main(start_mode: str = "draw") -> None:
                     # Pick a new random constellation and re-centre the view
                     active = pick_constellation(constellation_map, info)
                     real_graph = build_real_graph(active, constellation_map, g)
-                    view_ra, view_dec = constellation_center(active, constellation_map, g)
-                    all_stars = build_star_list(g, constellation_map, view_ra, view_dec)
+                    view_ra, view_dec, view_ra_span, view_dec_span = constellation_center(active, constellation_map, g)
+                    all_stars = build_star_list(g, constellation_map, view_ra, view_dec, view_ra_span, view_dec_span)
                     lookup = {s['hip']: s for s in all_stars}
-                    selected, score_text = [], ""
+                    strokes, score_text = [[]], ""
                     hop_selection, hop_route = [], []
+
+                elif event.key == pygame.K_g:
+                    # Toggle the reference constellation graph on/off
+                    show_graph = not show_graph
 
             elif event.type == pygame.MOUSEMOTION:
                 hovered = nearest_star(event.pos, all_stars)
@@ -177,13 +233,14 @@ def main(start_mode: str = "draw") -> None:
                 clicked = nearest_star(event.pos, all_stars)
                 if clicked is not None:
                     if mode == "draw":
-                        if selected and selected[-1] == clicked:
-                            selected.pop()
+                        cur = strokes[-1]
+                        if cur and cur[-1] == clicked:
+                            cur.pop()  # undo last point in current stroke
                         else:
-                            selected.append(clicked)
+                            cur.append(clicked)
                         score_text = ""
                     else:
-                        # Hop mode selection, first click chooses START, second chooses TARGET.
+                        # Hop mode: first click = START, second click = TARGET
                         if len(hop_selection) == 0:
                             hop_selection = [clicked]
                             hop_route = []
@@ -205,26 +262,39 @@ def main(start_mode: str = "draw") -> None:
                                     hop_route = [int(pid) for pid in path]
                                     score_text = f"Easiest hop difficulty: {cost:.2f}"
                         else:
-                            # Start a new hop selection.
                             hop_selection = [clicked]
                             hop_route = []
                             score_text = ""
 
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                if mode == "draw":
+                    # Right-click: lift pen — start a new stroke
+                    strokes.append([])
+                    score_text = ""
+
+        all_selected = [hip for stroke in strokes for hip in stroke]
         screen.fill(BLACK)
-        draw_real_lines(screen, active, constellation_map, lookup, g)
+        if show_graph:
+            draw_real_lines(screen, active, constellation_map, lookup, g)
 
         if mode == "hop":
-            draw_user_lines(screen, hop_route, lookup)
+            draw_user_lines(screen, [hop_route] if hop_route else [hop_selection], lookup)
             draw_stars(screen, all_stars, hop_route if hop_route else hop_selection, hovered, font_sm)
         else:
-            draw_user_lines(screen, selected, lookup)
-            draw_stars(screen, all_stars, selected, hovered, font_sm)
+            draw_user_lines(screen, strokes, lookup)
+            draw_stars(screen, all_stars, all_selected, hovered, font_sm)
 
-        draw_game_hud(screen, score_text, active, info, font_sm, font_md, mode)
+        draw_game_hud(screen, score_text, active, info, font_sm, font_md, mode, show_graph)
         pygame.display.flip()
 
     pygame.quit()
 
 
 if __name__ == '__main__':
-    main()
+    doctest.testmod()
+    python_ta.check_all(config={
+        'extra-imports': ['random', 'pygame', 'constellations', 'similarity',
+                          'star_hopping', 'visualization'],
+        'allowed-io': [],
+        'max-line-length': 120
+    })
