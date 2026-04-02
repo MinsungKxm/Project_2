@@ -1,4 +1,10 @@
-# CSC111 Project 2 - external libraries required to run main.py
-# Install: pip install -r requirements.txt   (Python 3.13.5)
-pygame
+# CSC111 Winter 2026 Project 2 - Constellation Explorer
+# Install all dependencies with: pip install -r requirements.txt
+
+# Testing and code checking
+hypothesis
+pytest
 python-ta
+
+# Graphics
+pygame

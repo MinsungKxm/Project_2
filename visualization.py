@@ -2,23 +2,16 @@
 
 visualization.py - Pygame Interactive Star Map
 
-How to run:
-    python visualization.py
+Handles all rendering and interaction for the constellation drawing game:
+coordinate projection, star drawing, user line drawing, click detection,
+and similarity scoring display.
 
-Controls:
-    - Click a star      : add it to your drawing (lines connect in order)
-    - Click last star   : undo the last point
-    - ENTER             : score your drawing against the real constellation
-    - R                 : reset your drawing
-    - Q / close window  : quit
-
-Imports from other project files:
-    constellations.py  -> load_constellation_graph, load_constellation_info
-    similarity.py      -> ConstellationGraph, compute_similarity_score, score_to_percentage
+Copyright (c) 2026 Jenny Lin and Project Group
 """
-
 from __future__ import annotations
+import doctest
 import math
+import python_ta
 import pygame
 
 from constellations import load_constellation_graph, load_constellation_info
@@ -58,10 +51,12 @@ SNAP_PX = 20
 
 def ra_dec_to_screen(ra: float, dec: float,
                      ra_center: float = RA_CENTER,
-                     dec_center: float = DEC_CENTER) -> tuple[int, int]:
+                     dec_center: float = DEC_CENTER,
+                     ra_span: float = RA_SPAN,
+                     dec_span: float = DEC_SPAN) -> tuple[int, int]:
     """Map (RA, Dec) in degrees to a pixel (x, y) on the screen."""
-    x = int((ra - (ra_center - RA_SPAN / 2)) / RA_SPAN * SCREEN_W)
-    y = int((1.0 - (dec - (dec_center - DEC_SPAN / 2)) / DEC_SPAN) * SCREEN_H)
+    x = int((ra - (ra_center - ra_span / 2)) / ra_span * SCREEN_W)
+    y = int((1.0 - (dec - (dec_center - dec_span / 2)) / dec_span) * SCREEN_H)
     return x, y
 
 
@@ -78,16 +73,28 @@ def magnitude_to_radius(mag: float) -> int:
 
 def build_star_list(g, constellation_map: dict,
                     ra_center: float = RA_CENTER,
-                    dec_center: float = DEC_CENTER) -> list[dict]:
-    """Return one dict per star in g, including its screen (x, y) position."""
+                    dec_center: float = DEC_CENTER,
+                    ra_span: float = RA_SPAN,
+                    dec_span: float = DEC_SPAN) -> list[dict]:
+    """Return one dict per star in g, including its screen (x, y) position.
+
+    Stars whose RA falls more than 180° away from ra_center are wrapped by
+    ±360° so that constellations straddling the 0h/24h boundary render correctly.
+    """
     stars = []
     for hip in g.all_vertices():
         data = g.get_vertex_data(hip)
-        sx, sy = ra_dec_to_screen(data['ra'], data['dec'], ra_center, dec_center)
+        ra = data['ra']
+        # Wrap RA so it is within 180° of the view centre
+        while ra - ra_center > 180.0:
+            ra -= 360.0
+        while ra_center - ra > 180.0:
+            ra += 360.0
+        sx, sy = ra_dec_to_screen(ra, data['dec'], ra_center, dec_center, ra_span, dec_span)
         codes = [c for c, members in constellation_map.items() if hip in members]
         stars.append({
             'hip':   hip,
-            'ra':    data['ra'],
+            'ra':    data['ra'],   # keep original RA for scoring
             'dec':   data['dec'],
             'mag':   data['magnitude'],
             'name':  data['name'],
@@ -165,18 +172,23 @@ def draw_real_lines(screen: pygame.Surface, code: str,
                 pygame.draw.line(screen, DIM_GREY, (a['sx'], a['sy']), (b['sx'], b['sy']), 1)
 
 
-def draw_user_lines(screen: pygame.Surface, selected: list[int], lookup: dict) -> None:
-    """Draw yellow lines between the user clicked stars in order."""
-    for i in range(len(selected) - 1):
-        a, b = lookup.get(selected[i]), lookup.get(selected[i + 1])
-        if a and b:
-            pygame.draw.line(screen, YELLOW, (a['sx'], a['sy']), (b['sx'], b['sy']), 2)
+def draw_user_lines(screen: pygame.Surface, strokes: list[list[int]], lookup: dict) -> None:
+    """Draw yellow lines for each stroke the user has drawn.
+
+    Each stroke is a list of HIP ids connected in order.
+    Different strokes are drawn independently (pen-lift between them).
+    """
+    for stroke in strokes:
+        for i in range(len(stroke) - 1):
+            a, b = lookup.get(stroke[i]), lookup.get(stroke[i + 1])
+            if a and b:
+                pygame.draw.line(screen, YELLOW, (a['sx'], a['sy']), (b['sx'], b['sy']), 2)
 
 
 def draw_hud(screen: pygame.Surface, score_text: str, code: str,
              info: dict, font_sm: pygame.font.Font, font_md: pygame.font.Font) -> None:
     """Draw the title, score, and control instructions."""
-    hint = "Click stars to draw  |  ENTER: Score  |  R: Reset  |  Q: Quit"
+    hint = "Left-click: draw  |  Right-click: lift pen  |  Z: undo  |  ENTER: Score  |  R: Reset  |  Q: Quit"
     screen.blit(font_sm.render(hint, True, GREY), (10, SCREEN_H - 22))
     if code in info:
         title = f"Constellation: {info[code]['name']}  ({code})"
@@ -185,7 +197,7 @@ def draw_hud(screen: pygame.Surface, score_text: str, code: str,
         screen.blit(font_md.render(score_text, True, GREEN), (10, 36))
 
 
-def nearest_star(mouse: tuple, stars: list[dict]):
+def nearest_star(mouse: tuple, stars: list[dict]) -> int | None:
     """Return the HIP id of the nearest star within SNAP_PX pixels, or None."""
     mx, my = mouse
     best_hip, best_d = None, SNAP_PX
@@ -200,22 +212,30 @@ def nearest_star(mouse: tuple, stars: list[dict]):
 # Scoring
 # ---------------------------------------------------------------------------
 
-def score_drawing(selected: list[int], lookup: dict, real: ConstellationGraph) -> str:
-    """Build a user ConstellationGraph from selected stars and return a score string."""
-    if len(selected) < 2:
+def score_drawing(strokes: list[list[int]], lookup: dict, real: ConstellationGraph) -> str:
+    """Build a user ConstellationGraph from all strokes and return a score string.
+
+    Each stroke contributes stars and edges. Stars clicked in multiple strokes
+    are only added once. Edges are added between consecutive stars in each stroke.
+    """
+    all_hips = [hip for stroke in strokes for hip in stroke]
+    if len(all_hips) < 2:
         return "Select at least 2 stars, then press ENTER to score!"
 
     user = ConstellationGraph('user')
-    for hip in selected:
-        if hip in lookup:
+    seen: set[int] = set()
+    for hip in all_hips:
+        if hip in lookup and hip not in seen:
             s = lookup[hip]
             user.add_star(str(hip), s['ra'], s['dec'])
+            seen.add(hip)
 
     nodes = user.get_nodes()
-    for i in range(len(selected) - 1):
-        id1, id2 = str(selected[i]), str(selected[i + 1])
-        if id1 in nodes and id2 in nodes and id2 not in nodes[id1].neighbours:
-            user.add_edge(id1, id2)
+    for stroke in strokes:
+        for i in range(len(stroke) - 1):
+            id1, id2 = str(stroke[i]), str(stroke[i + 1])
+            if id1 in nodes and id2 in nodes and id2 not in nodes[id1].neighbours:
+                user.add_edge(id1, id2)
 
     pct = score_to_percentage(compute_similarity_score(user, real))
     return f"Your similarity score: {pct}%"
@@ -253,7 +273,9 @@ def main() -> None:
     lookup = {s['hip']: s for s in all_stars}
     real_graph = build_real_graph(active, constellation_map, g)
 
-    selected: list[int] = []
+    # strokes: list of strokes; each stroke is a list of HIP ids.
+    # Right-click lifts the pen and starts a new stroke.
+    strokes: list[list[int]] = [[]]
     hovered = None
     score_text = ""
 
@@ -268,24 +290,40 @@ def main() -> None:
                 if event.key == pygame.K_q:
                     running = False
                 elif event.key == pygame.K_r:
-                    selected, score_text = [], ""
+                    strokes, score_text = [[]], ""
+                elif event.key == pygame.K_z:
+                    # Undo: remove last star; if current stroke is empty, remove it too
+                    while strokes and not strokes[-1]:
+                        if len(strokes) > 1:
+                            strokes.pop()
+                        else:
+                            break
+                    if strokes and strokes[-1]:
+                        strokes[-1].pop()
+                    score_text = ""
                 elif event.key == pygame.K_RETURN:
-                    score_text = score_drawing(selected, lookup, real_graph)
+                    score_text = score_drawing(strokes, lookup, real_graph)
             elif event.type == pygame.MOUSEMOTION:
                 hovered = nearest_star(event.pos, all_stars)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 clicked = nearest_star(event.pos, all_stars)
                 if clicked is not None:
-                    if selected and selected[-1] == clicked:
-                        selected.pop()
+                    cur = strokes[-1]
+                    if cur and cur[-1] == clicked:
+                        cur.pop()  # undo last point in current stroke
                     else:
-                        selected.append(clicked)
+                        cur.append(clicked)
                     score_text = ""
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                # Right-click: lift pen — start a new stroke
+                strokes.append([])
+                score_text = ""
 
+        all_selected = [hip for stroke in strokes for hip in stroke]
         screen.fill(BLACK)
         draw_real_lines(screen, active, constellation_map, lookup, g)
-        draw_user_lines(screen, selected, lookup)
-        draw_stars(screen, all_stars, selected, hovered, font_sm)
+        draw_user_lines(screen, strokes, lookup)
+        draw_stars(screen, all_stars, all_selected, hovered, font_sm)
         draw_hud(screen, score_text, active, info, font_sm, font_md)
         pygame.display.flip()
 
@@ -293,4 +331,9 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    doctest.testmod()
+    python_ta.check_all(config={
+        'extra-imports': ['math', 'pygame', 'constellations', 'similarity'],
+        'allowed-io': [],
+        'max-line-length': 120
+    })
