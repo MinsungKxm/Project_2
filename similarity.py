@@ -292,8 +292,7 @@ def _match_user_to_real(
 
     matching = {}
     for u_id, (ux, uy) in user_norm.items():
-        best_id = min(real_norm, key=lambda r_id: (ux - real_norm[r_id][0]) ** 2
-                                                   + (uy - real_norm[r_id][1]) ** 2)
+        best_id = min(real_norm, key=lambda r_id: (ux - real_norm[r_id][0]) ** 2 + (uy - real_norm[r_id][1]) ** 2)
         matching[u_id] = best_id
     return matching
 
@@ -481,3 +480,4 @@ if __name__ == '__main__':
         'allowed-io': [],
         'max-line-length': 120
     })
+    
